@@ -1,0 +1,317 @@
+---
+title: "Final"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# library(lattice)
+# library(ggplot2)
+# library(caret)
+# library(plyr)
+# library(e1071)
+# library(rpart)
+# library(ada)
+# library(class)
+# library(gplots)
+# library(ROCR)
+library(lars)
+library(DiceEval)
+library(caret)
+library(glmnet)
+library(xgboost)
+library(FNN)
+library(RSNNS)
+options(warn=-1)
+set.seed(3)
+
+```
+
+
+
+```{r}
+train = read.csv('train.csv')
+test = read.csv('test.csv')
+label = train[81]
+all_data = rbind(train[-81], test)
+all_data = all_data[-1]
+```
+
+#Necessary processing by python(missing value and get dummy)
+```{r}
+
+training = read.csv('training.csv')
+testing = read.csv('testing.csv')
+
+CV_data = training[1:1300,]
+local_test = training[1301:1460,]
+flds = createFolds(c(1:length(CV_data)), k = 10, list = TRUE, returnTrain = FALSE)
+
+
+#the distribution of target variable before processing
+ggplot(train, aes(SalePrice)) + geom_density()
+
+```
+
+```{r}
+#baseline function
+base = function(log.t, a = 1){
+  res = c(1:10)
+  for (fold in c(1:10)) {
+      baseline = glmnet(as.matrix(CV_data[-unlist(flds[fold]),-286]),as.matrix(CV_data[-unlist(flds[fold]),286]), alpha = a)
+      pred = predict(baseline, as.matrix(CV_data[unlist(flds[fold]),-286]),s=c(baseline$lambda[length(baseline$lambda)]))
+      true.val = CV_data[unlist(flds[fold]),286]
+      if (log.t==1) {
+        pred = exp(pred)
+        true.val = exp(true.val)
+      }
+      res[fold] = RMSE(log(true.val), log(abs(pred)))
+  }
+  
+  # print(res)
+  # print(mean(res))
+  CV_RMSE = mean(res)
+  
+  
+  
+  baseline = glmnet(as.matrix(CV_data[-286]),as.matrix(CV_data[286]), alpha = a)
+  pred = predict(baseline, as.matrix(local_test[-286]),s=c(baseline$lambda[length(baseline$lambda)]))
+  true.val = as.matrix(local_test[286])
+  if (log.t==1) {
+    pred = exp(pred)
+    true.val = exp(true.val)
+  }
+  # cat('test_RMSE:',RMSE(log(true.val), log(abs(pred))),'\n')
+  Test_RMSE = RMSE(log(true.val), log(abs(pred)))
+  
+  return(c(CV_RMSE, Test_RMSE))
+}
+```
+
+
+#Log transformation
+```{r}
+cat('CV_RMSE and Test_RMSE before take log transformation:\n')
+base(log.t = 0)
+training[286] = log(training[286])
+CV_data = training[1:1300,]
+local_test = training[1301:1460,]
+cat('CV_RMSE and Test_RMSE after take log transformation:\n')
+base(log.t = 1)
+
+```
+```{r}
+#the distribution of target variable after log transformation
+ggplot(training, aes(SalePrice)) + geom_density()
+```
+
+
+```{r}
+PCA = prcomp(training[-286])
+PC = predict(PCA)
+plot(PC[,1:2])
+```
+#Scaling(doesn`t work, no inprovment, maybe because of outliers)
+```{r}
+training = read.csv('training_scaling.csv')
+testing = read.csv('testing_scaling.csv')
+
+CV_data = training[1:1300,]
+local_test = training[1301:1460,]
+flds = createFolds(c(1:length(CV_data)), k = 10, list = TRUE, returnTrain = FALSE)
+
+base(log.t = 1)
+```
+
+#Removing outliers(by python, upload the data)
+```{r}
+training = read.csv('training_out_scaling.csv')
+testing = read.csv('testing_out_scaling.csv')
+# 
+CV_data = training[1:1300,]
+local_test = training[1301:1429,]
+flds = createFolds(c(1:length(CV_data)), k = 10, list = TRUE, returnTrain = FALSE)
+# 
+base(log.t = 1)
+```
+
+#Log transformation for skewed feature
+```{r}
+
+training = read.csv('training_o_s_logf.csv')
+testing = read.csv('testing_o_s_logf.csv')
+# 
+CV_data = training[1:1300,]
+local_test = training[1301:1429,]
+flds = createFolds(c(1:length(CV_data)), k = 10, list = TRUE, returnTrain = FALSE )
+# 
+base(log.t = 1)
+```
+#Model Selection
+
+Tuning
+```{r}
+cv.socre = c()
+test.socre = c()
+p = c(0.000001, 0.00001, 0.0001,0.001,0.01,0.1,1)
+for (i in p){
+  
+  temp = base(log.t = 1, a = i)
+  print(temp)
+  cv.socre = append(cv.socre,temp[1])
+  test.socre = append(test.socre,temp[2])
+}
+```
+```{r}
+plot(cv.socre,type='o',col='blue',ann=F, xaxt = "n", yaxt ="n")
+par(new=T)
+plot(test.socre,type='o',col='red',ann=F, xaxt = "n")
+axis(side = 1,at=c(1:7),labels = p)
+
+```
+
+```{r}
+#XGBoost
+res = c(1:10)
+log.t = 1
+for (fold in c(1:10)) {
+    xgbm = xgboost(data=as.matrix(CV_data[-unlist(flds[fold]),-286]),label = as.matrix(CV_data[-unlist(flds[fold]),286]),nrounds=25,verbose = 0)
+    pred = predict(xgbm, as.matrix(CV_data[unlist(flds[fold]),-286]))
+    true.val = CV_data[unlist(flds[fold]),286]
+    if (log.t==1) {
+      pred = exp(pred)
+      true.val = exp(true.val)
+    }
+    res[fold] = RMSE(log(true.val), log(abs(pred)))
+}
+
+print(res)
+cat('CV_RMSE:',mean(res),'\n')
+
+xgm = xgboost(as.matrix(CV_data[-286]),as.matrix(CV_data[286]),nrounds=25,verbose = 0)
+pred = predict(xgm, as.matrix(local_test[-286]))
+true.val = as.matrix(local_test[286])
+if (log.t==1) {
+  pred = exp(pred)
+  true.val = exp(true.val)
+}
+cat('test_RMSE:',RMSE(log(true.val), log(abs(pred))),'\n')
+
+
+```
+```{r}
+#knn
+
+res = c(1:10)
+for (fold in c(1:10)) {
+    knnm = knn.reg(train=as.matrix(CV_data[-unlist(flds[fold]),-286]),test=as.matrix(CV_data[unlist(flds[fold]),-286]),y = as.matrix(CV_data[-unlist(flds[fold]),286]),k=7)
+    pred = knnm$pred
+    true.val = CV_data[unlist(flds[fold]),286]
+    if (log.t==1) {
+      pred = exp(pred)
+      true.val = exp(true.val)
+    }
+    res[fold] = RMSE(log(true.val), log(abs(pred)))
+}
+
+print(res)
+cat('CV_RMSE:',mean(res),'\n')
+
+knnm = knn.reg(as.matrix(CV_data[-286]),as.matrix(local_test[-286]),as.matrix(CV_data[286]),k = 7)
+pred = knnm$pred
+true.val = as.matrix(local_test[286])
+if (log.t==1) {
+  pred = exp(pred)
+  true.val = exp(true.val)
+}
+cat('test_RMSE:',RMSE(log(true.val), log(abs(pred))),'\n')
+```
+```{r}
+#Averaging(Baselin and XGBoost)
+res = c(1:10)
+for (fold in c(1:10)) {
+    xgbm = xgboost(data=as.matrix(CV_data[-unlist(flds[fold]),-286]),label = as.matrix(CV_data[-unlist(flds[fold]),286]),nrounds=25,verbose = 0)
+    pred1 = predict(xgbm, as.matrix(CV_data[unlist(flds[fold]),-286]))
+    
+    baseline = glmnet(as.matrix(CV_data[-unlist(flds[fold]),-286]),as.matrix(CV_data[-unlist(flds[fold]),286]))
+    pred2 = predict(baseline, as.matrix(CV_data[unlist(flds[fold]),-286]),s=c(baseline$lambda[length(baseline$lambda)]))
+    
+    pred = apply(data.frame(pred1, pred2),1,mean)
+    
+    
+    true.val = CV_data[unlist(flds[fold]),286]
+    if (log.t==1) {
+      pred = exp(pred)
+      true.val = exp(true.val)
+    }
+    res[fold] = RMSE(log(true.val), log(abs(pred)))
+}
+
+print(res)
+cat('CV_RMSE:',mean(res),'\n')
+
+xgm = xgboost(as.matrix(CV_data[-286]),as.matrix(CV_data[286]),nrounds=25,verbose = 0)
+pred1 = predict(baseline, as.matrix(local_test[-286]))
+true.val = as.matrix(local_test[286])
+
+baseline = glmnet(as.matrix(CV_data[-286]),as.matrix(CV_data[286]))
+pred2 = predict(baseline, as.matrix(local_test[-286]),s=c(baseline$lambda[length(baseline$lambda)]))
+
+pred = apply(data.frame(pred1, pred2),1,mean)
+
+if (log.t==1) {
+  pred = exp(pred)
+  true.val = exp(true.val)
+}
+cat('test_RMSE:',RMSE(log(true.val), log(abs(pred))),'\n')
+
+
+
+```
+```{r}
+#Averaging(Baselin and knn)
+res = c(1:10)
+for (fold in c(1:10)) {
+    xgbm = xgboost(data=as.matrix(CV_data[-unlist(flds[fold]),-286]),label = as.matrix(CV_data[-unlist(flds[fold]),286]),nrounds=25,verbose = 0)
+    pred1 = predict(xgbm, as.matrix(CV_data[unlist(flds[fold]),-286]))
+    
+    baseline = glmnet(as.matrix(CV_data[-unlist(flds[fold]),-286]),as.matrix(CV_data[-unlist(flds[fold]),286]))
+    pred2 = predict(baseline, as.matrix(CV_data[unlist(flds[fold]),-286]),s=c(baseline$lambda[length(baseline$lambda)]))
+    
+    knnm = knn.reg(train=as.matrix(CV_data[-unlist(flds[fold]),-286]),test=as.matrix(CV_data[unlist(flds[fold]),-286]),y = as.matrix(CV_data[-unlist(flds[fold]),286]),k=7)
+    pred3 = knnm$pred
+    
+    pred = apply(data.frame(pred1, pred2,pred3),1,mean)
+    
+    
+    true.val = CV_data[unlist(flds[fold]),286]
+    if (log.t==1) {
+      pred = exp(pred)
+      true.val = exp(true.val)
+    }
+    res[fold] = RMSE(log(true.val), log(abs(pred)))
+}
+
+print(res)
+cat('CV_RMSE:',mean(res),'\n')
+
+xgm = xgboost(as.matrix(CV_data[-286]),as.matrix(CV_data[286]),nrounds=25,verbose = 0)
+pred1 = predict(baseline, as.matrix(local_test[-286]))
+true.val = as.matrix(local_test[286])
+
+baseline = glmnet(as.matrix(CV_data[-286]),as.matrix(CV_data[286]))
+pred2 = predict(baseline, as.matrix(local_test[-286]),s=c(baseline$lambda[length(baseline$lambda)]))
+
+knnm = knn.reg(as.matrix(CV_data[-286]),as.matrix(local_test[-286]),as.matrix(CV_data[286]),k = 7)
+pred3 = knnm$pred
+
+pred = apply(data.frame(pred1, pred2, pred3),1,mean)
+
+if (log.t==1) {
+  pred = exp(pred)
+  true.val = exp(true.val)
+}
+cat('test_RMSE:',RMSE(log(true.val), log(abs(pred))),'\n')
+
+```
+
